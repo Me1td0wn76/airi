@@ -1,5 +1,6 @@
 use std::sync::Mutex;
 
+use clap::ValueEnum;
 use log::info;
 use tauri::{
   Manager,
@@ -7,7 +8,7 @@ use tauri::{
   plugin::{Builder as PluginBuilder, TauriPlugin},
 };
 
-use crate::app::models::new_whisper_processor;
+use crate::app::models::{new_whisper_processor, whisper::WhichWhisperModel};
 
 #[derive(Default)]
 struct AppDataWhisperProcessor {
@@ -18,11 +19,29 @@ struct AppDataWhisperProcessor {
 pub async fn load_model_whisper<R: Runtime>(
   app: tauri::AppHandle<R>,
   window: tauri::WebviewWindow<R>,
+  model_type: Option<String>,
 ) -> Result<(), String> {
   info!("Loading models...");
 
+  {
+    let data = app.state::<Mutex<AppDataWhisperProcessor>>();
+    let data = data.lock().unwrap();
+    if data.whisper_processor.is_some() {
+      info!("Whisper model already loaded, skipping...");
+      return Ok(());
+    }
+  }
+
   // Load the traditional whisper models first
-  match new_whisper_processor(window) {
+  match new_whisper_processor(
+    window,
+    Some(WhichWhisperModel::from_str(
+      model_type
+        .unwrap_or_else(|| "medium".to_string())
+        .as_str(),
+      true,
+    )?),
+  ) {
     Ok(p) => {
       let data = app.state::<Mutex<AppDataWhisperProcessor>>();
       let mut data = data.lock().unwrap();
@@ -44,7 +63,8 @@ pub async fn load_model_whisper<R: Runtime>(
 pub async fn audio_transcription<R: Runtime>(
   app: tauri::AppHandle<R>,
   chunk: Vec<f32>,
-) -> Result<String, String> {
+  language: Option<String>,
+) -> Result<(String, String), String> {
   info!("Processing audio transcription...");
 
   let data = app.state::<Mutex<AppDataWhisperProcessor>>();
@@ -61,11 +81,13 @@ pub async fn audio_transcription<R: Runtime>(
   let mut data = data.lock().unwrap();
   let processor = data.whisper_processor.as_mut().unwrap();
 
-  let transcription = processor
-    .transcribe(chunk.as_slice())
+  let (transcription, language) = processor
+    .transcribe(chunk.as_slice(), language.as_deref())
     .map_err(|e| e.to_string())?;
 
-  Ok(transcription)
+  info!("Transcription completed: {}", transcription);
+
+  Ok((transcription, language))
 }
 
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
